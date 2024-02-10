@@ -1,0 +1,1315 @@
+---
+title: "Untitled"
+date: "October 21, 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+title: "Fraud Detection 1st Submit"
+date: "August 29, 2018"
+output: html_document
+---
+
+
+# Background {.tabset}
+## Finhacks 2018
+The following markdown is produced for participating in Finhacks 2018 #DataChallange (https://finhacks.id/).
+
+Finhacks 2018 #DataChallange is data science competition held by BCA (Bank Central Asia), an Indonesian bank. This competition aimed for big data and IT talents in Indonesia in developing innovative solutions that are able to answer business issues from a scientific data perspective.
+
+
+# Objectives
+
+
+## Libraries and Setup
+We'll set-up caching for this notebook and load the package into our workspace using the `library()` function:
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(Amelia)
+library(missForest)
+library(lubridate)
+library(readr)
+library(unbalanced)
+library(dplyr)
+library(caret)
+library(randomForest)
+library(magrittr)
+library(pROC)
+library(ROCR)
+library(stringi)
+library(FactoMineR)
+library(ggplot2)
+
+```
+
+
+
+# DATA PRE-PROCESSING
+
+```{r}
+# load dataset
+setwd("C:/Users/Documents/BCA/fraud/data_input")
+fraud_det2 <- read.csv("train.csv")
+str(fraud_det2)
+```
+
+
+
+
+
+to get "data-sense" in later analysis we need to extract our date into some easy form.
+```{r}
+# extract year,month, and day  from date. (date/tanggal_transaksi_awal has processed early with python to convert julian date into calender)
+fraud_det2$tanggal_transaksi_awal <- as.POSIXct(fraud_det2$tanggal_transaksi_awal)
+str(fraud_det2)
+```
+
+
+
+
+
+
+
+
+## Feature Engineering
+
+lets check our features
+```{r}
+# check how many levels in our data that we assume as categorical variable
+
+length(unique(fraud_det2$tipe_kartu))
+length(unique(fraud_det2$id_merchant))
+length(unique(fraud_det2$nama_merchant))
+length(unique(fraud_det2$tipe_mesin))
+length(unique(fraud_det2$lokasi_mesin))
+length(unique(fraud_det2$pemilik_mesin))
+length(unique(fraud_det2$tipe_transaksi))
+length(unique(fraud_det2$bank_pemilik_kartu))
+length(unique(fraud_det2$id_negara))
+length(unique(fraud_det2$nama_negara))
+length(unique(fraud_det2$nama_kota))
+length(unique(fraud_det2$kepemilikan_kartu))
+length(unique(fraud_det2$flag_transaksi_finansial))
+length(unique(fraud_det2$nama_channel))
+length(unique(fraud_det2$id_channel))
+length(unique(fraud_det2$kuartal_transaksi))
+length(unique(fraud_det2$nama_transaksi))
+length(unique(fraud_det2$status_transaksi))
+```
+Bank_pemilik_kartu, flag_transaksi_finansial, and status_transaksi are variables that have single category, this is what we called “near-zero-variance” predictors. These “near-zero-variance” predictors need to eliminated prior to modeling.
+\. we also remove unuseful variables like: id_tanggal_transaksi_awal, id_channel, id_merchant and id_negara since it has presented by tangga_transaksi_awal, nama_channel, nama_merchant and nama_negara.
+
+```{r}
+#remove unuseful data 
+fraud_det2 <- fraud_det2 %>%
+  select(-X,-id_tanggal_transaksi_awal, -tanggal_transaksi_awal,-bank_pemilik_kartu,-flag_transaksi_finansial,-status_transaksi,-id_channel,-id_merchant,-id_negara)
+str(fraud_det2)
+```
+
+`
+
+
+check is there any missing values
+```{r}
+sum(is.na(fraud_det2))# check how many missing values in our dataset
+```
+it seems we have 84 Na in our dataset
+
+lest impute missing values with Amelia & missforest packages
+```{r}
+missmap(fraud_det2)
+percentage_Na_value <- 84/13125
+percentage_Na_value
+```
+**Interpretation:**
+visually we hard to see where is the missing values because it only 6.4% from dataset.
+
+for better accuracy for model i want to impute data for the missing values rather than remove it.
+
+I'm using Amelia package methods for impuitng missing values in dataset 
+
+
+
+
+
+
+```{r}
+ords = c("tipe_kartu", "nama_merchant ", "tipe_mesin", "tipe_transaksi", "nama_transaksi", "nama_negara", "nama_kota", "lokasi_mesin", "pemilik_mesin", "kuartal_transaksi", "kepemilikan_kartu", "nama_channel") #imputed these variables as integers
+idvars =c("nilai_transaksi", "flag_transaksi_fraud")
+ncpus = 2
+amelia_fit <- amelia(fraud_det2, m=5, idvars = idvars ,parallel = "multicore", ncpus = ncpus )
+```
+
+
+
+
+write the result for imputed data
+```{r}
+write.amelia(amelia_fit, file.stem = 'Fraud_det2_imp')
+```
+
+
+
+```{r}
+#load dataset with one of imputed data result
+
+setwd("C:/Users/Documents/BCA/fraud/data_input")
+fraud_det2 <- read.csv("Fraud_det2_imp1.csv")
+fraud_det2 <- fraud_det2 %>% select(-X)
+str(fraud_det2)
+```
+
+lets Check ifour new data has miising values
+```{r}
+sum(is.na(fraud_det2))
+```
+
+dont forget to check if any duplicated data 
+```{r}
+anyDuplicated(fraud_det2)
+```
+
+```{r}
+fraud_det2 <- fraud_det2 %>% distinct()
+anyDuplicated(fraud_det2)
+```
+
+
+
+descriptive statistics for our data
+```{r}
+summary(fraud_det2)
+```
+if we look at descriptive statistic data above, we have an unclear values from our data, for example the minimum values of "minimum_nilai_transaksi" varable  has negative values: -368933, so does for "rata_rata_nilai_transaksi" and r"ata_rata_jumlah_transaksi" variables.  
+
+
+firstly, lets make a new feature called "range_nilai_transaksi" to simpfly maksimum_nilai_transaksi and minimum_nilai_transaksi values
+```{r}
+fraud_det2$range_nilai_transaksi <- fraud_det2$maksimum_nilai_transaksi - fraud_det2$minimum_nilai_transaksi
+```
+
+
+```{r}
+library(dplyr)
+fraud_det2 <- fraud_det2 %>% select(-maksimum_nilai_transaksi,-minimum_nilai_transaksi)
+str(fraud_det2)
+```
+
+Lets get rid of magic values (non-logic sense data)
+
+
+```{r}
+fraud_det2 <- fraud_det2 %>%
+  filter(-rata_rata_jumlah_transaksi<=0) 
+
+fraud_det2 <- fraud_det2 %>% filter(-rata_rata_nilai_transaksi<=0)
+
+fraud_det2 <- fraud_det2 %>% filter(-range_nilai_transaksi <=0)
+
+str(fraud_det2)
+```
+
+
+
+```{r}
+summary(fraud_det2)
+```
+
+
+
+
+lets see the variable distribution  by histogram plot
+```{r}
+par(mfrow=c(1,2))
+for(i in 2:17) {
+    hist(fraud_det2[,i], main=names(fraud_det2)[i])
+}
+```
+
+after we see from histogram above, we can find  the distributon for numeric variables like: nilai_transaksi, rata_rata_nilai_transaksi, rata_rata_jumlah_transaksi, range_nilai_transaksi, maksimum_nilai_transaksi  are right-skewed because the tail here goes to the positive values. the distribution is not good for our model because we  will have so many outliers, so this variables distribution need normalization. but we do normalization later because i want to investigate more from all our features
+
+
+
+
+
+
+lets check correlation for all features
+```{r}
+library(corrplot)
+corVariables_all <- cor(fraud_det2)
+corrplot(corVariables_all)
+```
+**Interpretation:**
+if we look at correlation plot above, we found that some variables have high negative correlation (less than -0.75) like nama_merchant-lokasi_mesin and nama_channel-kepemilikan kartu. 
+
+
+lets verify which variable have high correlation
+```{r}
+# print indexes of highly correlated attributes
+highlyCorVariables_all <- findCorrelation(corVariables_all, cutoff = .75)
+highlyCorVariables_all
+```
+it seems nama_channel is the features that have high correlation and it may affect to our model, so we removed this feature.
+
+
+
+
+```{r}
+#remove highly correlated feature
+fraud_det2 <- fraud_det2 %>% select(-nama_channel)
+
+str(fraud_det2)
+
+```
+
+find out which features important for our model
+```{r}
+for (i in seq(from=1, to=16, by=2)) 
+{
+  show(
+    featurePlot(
+    X<- fraud_det2[,c(i, i+1)],
+    Y<- as.factor(fraud_det2$flag_transaksi_fraud),
+    plot = "density",
+    scales=list(x=list(relation="free"), y=list(relation="free")),
+    adjust =1.5,
+    pch= c(1,8,15),
+    layout=c(2,1),
+    auto.key=TRUE
+  
+
+    )
+  )
+  
+}
+```
+**Interpretation:**
+The following features are significant in terms of having an impact on frauds: tipe_mesin, nama_transaksi, lokasi_mesin.  the  other features have a good overlap of graphs and hence will not have too much impact on the frauds, but im not really sure for tipe_transaksi lets check again with boxplot
+
+
+Boxplot
+```{r}
+for (i in seq(from =1, to = 16, by = 2))
+{
+  show(
+    featurePlot(
+      x = fraud_det2[, c(i,i+1)], 
+      y = as.factor(fraud_det2$flag_transaksi_fraud),
+      plot = "box", jitter = TRUE,
+      scales = list(x = list(relation="free"), 
+                    y = list(relation="free")), 
+      adjust = 1.5, # Adjusts curve smoothness
+      aspect = "fill",
+      
+      pch =  c( 8, 19, 17),    # Point character at the bottom of graph to show pt density
+      layout = c(4,1 ),   # Four columns
+      auto.key=TRUE
+    )
+  )
+}
+```
+**Interpretation:**
+The box plots above show that tipe_mesin, nama_transaksi, lokasi_mesin have different median and can be significant for our model. meanwhile tipe_transaksi dont have much differences in their medians between frauds and no-fraud nd hence are not very significant for prediction same like the others
+
+
+
+
+
+
+**Recoding and Rescaling Variables**
+This data have categorical features with so many levels and it will make problems when we make our model using decision tree or random forest. it will taking so much resources when we make our model. My idea is transform a categorical feature into one or multiple numeric features by using **Binary Encoding** methods. i will do it in manual way.
+
+
+
+since we have so many levels in our categorical variables, lets check frequencies from each level.
+
+```{r}
+fraud_det2 %>% group_by(tipe_kartu) %>% tally(,sort = TRUE)
+```
+
+
+
+```{r}
+fraud_det2 %>% group_by(nama_merchant) %>% tally(,sort = TRUE)
+```
+
+```{r}
+fraud_det2 %>% group_by(tipe_mesin) %>% tally(,sort = TRUE)
+```
+
+```{r}
+fraud_det2 %>% group_by(tipe_transaksi) %>% tally(,sort = TRUE)
+```
+
+```{r}
+fraud_det2 %>% group_by(nama_transaksi) %>% tally(,sort = TRUE)
+```
+
+
+```{r}
+fraud_det2 %>% group_by(pemilik_mesin) %>% tally(,sort = TRUE)
+```
+
+```{r}
+fraud_det2 %>% group_by(lokasi_mesin) %>% tally(,sort = TRUE)
+```
+
+
+```{r}
+fraud_det2 %>% group_by(nama_negara) %>% tally(,sort = TRUE)
+```
+
+```{r}
+fraud_det2 %>% group_by(nama_kota) %>% tally(,sort = TRUE)
+```
+
+```{r}
+fraud_det2 %>% group_by(kuartal_transaksi) %>% tally(,sort = TRUE)
+```
+
+
+```{r}
+fraud_det2 %>% group_by(kepemilikan_kartu) %>% tally(,sort = TRUE)
+```
+**Interpretation:**
+if we see from data above, some features have levels / cordinalities that we can combine based on the frequencies. to combine this levels im using binary encoding.
+
+
+
+
+1. Binary encoding for nama_merchant
+```{r}
+ceiling(log(1105+1)/log(2)) 
+#calculate how many features that we uuse to store our levels or cardinalities using  the power law of binary encoding
+```
+it means we can store 1105 levels using only 11 features with binary encoding
+
+```{r}
+merchant_name <- c(fraud_det2$nama_merchant)
+merchant_encode <- matrix( #convert to matrix
+  as.integer(intToBits(as.integer(as.factor(merchant_name)))), #convert merchant_name to factor, then to integer  then to numeric binary representation (as a vector of length 11 for each observation), then to integer (“numeric”)
+  ncol = 11,
+  nrow = length(merchant_name),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(merchant_name)) + 1)/log(2))] #using the inverse of the binary power property (ceil(log(N+1)/log(2))), remove all the unused columns (the columns with zeroes).
+str(merchant_encode)
+```
+```{r}
+class(merchant_encode)
+```
+
+
+```{r}
+nama_merchant2 <- as.data.frame(merchant_encode) #convert matrix into dataframe
+fraud_det2 <- fraud_det2 %>% # replace  categorical variable with new multiple numeric  feature from binary encoding
+  select(-nama_merchant)%>%
+  mutate(nama_merchant_1 = nama_merchant2$V1, nama_merchant_2 = nama_merchant2$V2, nama_merchant_3 = nama_merchant2$V3,nama_merchant_4 = nama_merchant2$V4, nama_merchant_5 = nama_merchant2$V5,nama_merchant_6 = nama_merchant2$V6, nama_merchant_7 = nama_merchant2$V7,nama_merchant_8 = nama_merchant2$V8,nama_merchant_9 = nama_merchant2$V9, nama_merchant_10 = nama_merchant2$V10,nama_merchant_11 = nama_merchant2$V11)
+str(fraud_det2)
+```
+
+
+2. Binary encoding for tipe mesin
+```{r}
+ceiling(log(5338+1)/log(2))
+```
+
+```{r}
+mesin_type <- c(fraud_det2$tipe_mesin)
+mesin_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(mesin_type)))),
+  ncol = 13,
+  nrow = length(mesin_type),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(mesin_type)) + 1)/log(2))]
+str(mesin_encode)
+```
+
+
+```{r}
+
+tipe_mesin2 <- as.data.frame(mesin_encode)
+fraud_det2 <- fraud_det2 %>%
+  select(-tipe_mesin)%>%
+  mutate(tipe_mesin_1 = tipe_mesin2$V1, tipe_mesin_2 = tipe_mesin2$V2, tipe_mesin_3 = tipe_mesin2$V3,tipe_mesin_4 = tipe_mesin2$V4, tipe_mesin_5 = tipe_mesin2$V5,tipe_mesin_6 = tipe_mesin2$V6, tipe_mesin_7 = tipe_mesin2$V7,tipe_mesin_8 = tipe_mesin2$V8,tipe_mesin_9 = tipe_mesin2$V9, tipe_mesin_10 = tipe_mesin2$V10,tipe_mesin_11 = tipe_mesin2$V11,tipe_mesin_12 = tipe_mesin2$V12,tipe_mesin_13 = tipe_mesin2$V13)
+str(fraud_det2)
+```
+
+
+3. Binary encoding for pemilik mesin
+```{r}
+ceiling(log(1665+1)/log(2))
+```
+
+```{r}
+mesin_owner <- c(fraud_det2$pemilik_mesin)
+owner_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(mesin_owner)))),
+  ncol = 11,
+  nrow = length(mesin_owner),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(mesin_owner)) + 1)/log(2))]
+str(owner_encode)
+```
+
+```{r}
+pemilik_mesin2 <- as.data.frame(owner_encode)
+fraud_det2 <- fraud_det2 %>%
+  select(-pemilik_mesin)%>%
+  mutate(pemilik_mesin_1 = pemilik_mesin2$V1, pemilik_mesin_2 = pemilik_mesin2$V2, pemilik_mesin_3 = pemilik_mesin2$V3, pemilik_mesin_4 = pemilik_mesin2$V4, pemilik_mesin_5 = pemilik_mesin2$V5, pemilik_mesin_6 = pemilik_mesin2$V6, pemilik_mesin_7 = pemilik_mesin2$V7, pemilik_mesin_8 = pemilik_mesin2$V8, pemilik_mesin_9 = pemilik_mesin2$V9, pemilik_mesin_10 = pemilik_mesin2$V10, pemilik_mesin_11 = pemilik_mesin2$V11)
+str(fraud_det2)
+```
+
+
+
+4. Binary encoding for lokasi mesin
+```{r}
+ceiling(log(5810+1)/log(2))
+```
+
+```{r}
+machine_loc <- c(fraud_det2$lokasi_mesin)
+loc_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(machine_loc)))),
+  ncol = 13,
+  nrow = length(machine_loc),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(machine_loc)) + 1)/log(2))]
+str(loc_encode)
+```
+
+```{r}
+
+lokasi_mesin2 <- as.data.frame(loc_encode)
+fraud_det2 <- fraud_det2 %>%
+  select(-lokasi_mesin)%>%
+  mutate(lokasi_mesin_1 = lokasi_mesin2$V1, lokasi_mesin_2=lokasi_mesin2$V2, lokasi_mesin_3=lokasi_mesin2$V3,lokasi_mesin_4=lokasi_mesin2$V4, lokasi_mesin_5=lokasi_mesin2$V5,lokasi_mesin_6=lokasi_mesin2$V6, lokasi_mesin_7=lokasi_mesin2$V7,lokasi_mesin_8=lokasi_mesin2$V8,lokasi_mesin_9=lokasi_mesin2$V9, lokasi_mesin_10=lokasi_mesin2$V10,lokasi_mesin_11=lokasi_mesin2$V11,lokasi_mesin_12=lokasi_mesin2$V12,lokasi_mesin_13=lokasi_mesin2$V13)
+str(fraud_det2)
+```
+
+
+5. Binary encoding for nama kota
+```{r}
+ceiling(log(229+1)/log(2))
+```
+
+```{r}
+city_name <- c(fraud_det2$nama_kota)
+city_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(city_name)))),
+  ncol = 8,
+  nrow = length(city_name),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(city_name)) + 1)/log(2))]
+str(city_encode)
+```
+
+
+```{r}
+nama_kota2 <- as.data.frame(city_encode)
+#str(lokasi_mesin2)
+fraud_det2 <- fraud_det2 %>%
+  select(-nama_kota)%>%
+  mutate(nama_kota_1 = nama_kota2$V1, nama_kota_2 = nama_kota2$V2, nama_kota_3 = nama_kota2$V3, nama_kota_4 = nama_kota2$V4, nama_kota_5 = nama_kota2$V5, nama_kota_6 = nama_kota2$V6, nama_kota_7 = nama_kota2$V7, nama_kota_8 = nama_kota2$V8)
+str(fraud_det2)
+```
+
+
+
+
+
+
+6. Binary encoding for tipe kartu
+```{r}
+ceiling(log(14+1)/log(2))
+```
+
+```{r}
+card_type <- c(fraud_det2$tipe_kartu)
+card_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(card_type)))),
+  ncol = 4,
+  nrow = length(card_type),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(card_type)) + 1)/log(2))]
+str(card_encode)
+```
+
+```{r}
+tipe_kartu2 <- as.data.frame(card_encode)
+#str(lokasi_mesin2)
+fraud_det2 <- fraud_det2 %>%
+  select(-tipe_kartu)%>%
+  mutate(tipe_kartu_1 = tipe_kartu2$V1, tipe_kartu_2 = tipe_kartu2$V2, tipe_kartu_3 = tipe_kartu2$V3, tipe_kartu_4 = tipe_kartu2$V4)
+str(fraud_det2)
+```
+
+
+7. Binary encoding for tipe transaksi
+
+```{r}
+ceiling(log(20 +1)/log(2))
+```
+
+```{r}
+transaction_type <- c(fraud_det2$tipe_transaksi)
+trans_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(transaction_type)))),
+  ncol = 5,
+  nrow = length(transaction_type),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(transaction_type)) + 1)/log(2))]
+str(trans_encode)
+```
+
+```{r}
+tipe_transaksi2 <- as.data.frame(trans_encode)
+#str(lokasi_mesin2)
+fraud_det2 <- fraud_det2 %>%
+  select(-tipe_transaksi)%>%
+  mutate(tipe_transaksi_1 = tipe_transaksi2$V1, tipe_transaksi_2 = tipe_transaksi2$V2, tipe_transaksi_3 = tipe_transaksi2$V3, tipe_transaksi_4 = tipe_transaksi2$V4, tipe_transaksi_5 = tipe_transaksi2$V5)
+str(fraud_det2)
+```
+
+
+8. encoding for nama transaksi
+
+```{r}
+ceiling(log(20 +1)/log(2))
+```
+
+
+```{r}
+transaction_name <- c(fraud_det2$nama_transaksi)
+name_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(transaction_name)))),
+  ncol = 5,
+  nrow = length(transaction_name),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(transaction_name)) + 1)/log(2))]
+str(name_encode)
+```
+
+
+```{r}
+nama_transaksi2 <- as.data.frame(name_encode)
+fraud_det2 <- fraud_det2 %>%
+  select(-nama_transaksi)%>%
+  mutate(nama_transaksi_1 = nama_transaksi2$V1, nama_transaksi_2 = nama_transaksi2$V2, nama_transaksi_3 = nama_transaksi2$V3, nama_transaksi_4 = nama_transaksi2$V4, nama_transaksi_5 = nama_transaksi2$V5)
+str(fraud_det2)
+```
+
+
+9. Binary encoding for nama negara
+```{r}
+ceiling(log(12+1)/log(2))
+```
+
+```{r}
+nation_name <- c(fraud_det2$nama_negara)
+nation_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(nation_name)))),
+  ncol = 4,
+  nrow = length(nation_name),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(nation_name)) + 1)/log(2))]
+str(nation_encode)
+```
+
+```{r}
+nama_negara2 <- as.data.frame(nation_encode)
+#str(lokasi_mesin2)
+fraud_det2 <- fraud_det2 %>%
+  select(-nama_negara)%>%
+  mutate(nama_negara_1 = nama_negara2$V1, nama_negara_2 = nama_negara2$V2, nama_negara_3 = nama_negara2$V3, nama_negara_4 = nama_negara2$V4)
+str(fraud_det2)
+```
+
+
+
+
+11. Binary encoding for kepemilikan kartu
+```{r}
+ceiling(log(2+1)/log(2))
+```
+
+
+
+
+```{r}
+card_owner <- c(fraud_det2$kepemilikan_kartu)
+card_owner_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(card_owner)))),
+  ncol = 2,
+  nrow = length(card_owner),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(card_owner)) + 1)/log(2))]
+str(card_owner_encode)
+```
+
+```{r}
+kepemilikan_kartu2 <- as.data.frame(card_owner_encode)
+#str(lokasi_mesin2)
+fraud_det2 <- fraud_det2 %>%
+  select(-kepemilikan_kartu)%>%
+  mutate(kepemilikan_kartu_1 = kepemilikan_kartu2$V1, kepemilikan_kartu_2 = kepemilikan_kartu2$V2)
+str(fraud_det2)
+```
+
+12. Binary encoding for kuartal transaksi
+```{r}
+ceiling(log(4+1)/log(2))
+```
+
+```{r}
+trans_qtr <- c(fraud_det2$kuartal_transaksi)
+trans_qtr_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(trans_qtr)))),
+  ncol = 3,
+  nrow = length(trans_qtr),
+  byrow = TRUE
+)[, 1:ceiling(log(length(unique(trans_qtr)) + 1)/log(2))]
+str(trans_qtr_encode)
+```
+
+
+
+
+```{r}
+kuartal_transaksi2 <- as.data.frame(trans_qtr_encode)
+#str(lokasi_mesin2)
+fraud_det2 <- fraud_det2 %>%
+  select(-kuartal_transaksi)%>%
+  mutate(kuartal_transaksi_1 = kuartal_transaksi2$V1, kuartal_transaksi_2 = kuartal_transaksi2$V2, kuartal_transaksi_3 = kuartal_transaksi2$V3)
+str(fraud_det2)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+fraud_det2 <- fraud_det2 %>% mutate(class = flag_transaksi_fraud ) %>% select(-flag_transaksi_fraud)
+str(fraud_det2)
+```
+
+**Normalization continous features**
+before qe move along further, dont forget to normalize data for continous feature like nilai_transaksi, rata_rata_nilai_transaksi , rata_rata_jumlah_transaksi and range_nilai_transaksi    
+
+```{r}
+fraud_det2 <- fraud_det2 %>% mutate(log_nilai_transaksi=log10(nilai_transaksi+1), log_rata_nilai_transaksi=log10(rata_rata_nilai_transaksi+1), log_range=log10(range_nilai_transaksi+1))
+
+fraud_det2 <- fraud_det2 %>% select(-nilai_transaksi,-rata_rata_nilai_transaksi,-range_nilai_transaksi)
+str(fraud_det2)
+```
+
+```{r}
+summary(fraud_det2)
+```
+
+
+
+
+
+
+
+
+
+
+Lets balance the data using ubSMOTE
+```{r}
+balanceddata <-ubSMOTE(X=fraud_det2[,-c(81)], Y=as.factor(fraud_det2$class), perc.over=200, perc.under=800, verbose = TRUE)
+```
+
+
+
+Collate the Balanced data together and check on the dimensions
+```{r}
+traindata2 <- cbind(balanceddata$X, class = balanceddata$Y)
+dim(traindata2)
+```
+
+
+```{r}
+prop.table(table(traindata2$class))
+```
+
+```{r}
+str(traindata2)
+```
+
+
+
+
+ALGORTHM MODEL FOR FRAUD DETECTION
+Creating Training and Validation dataset
+```{r}
+set.seed(133)
+#Partitioning the data and creating a Training and Validation dataset from the Balanced dataset
+index<-createDataPartition(traindata2$class, p=0.7, list = F )
+tr2<-traindata2[index,]
+valid2<-traindata2[-index,]
+```
+
+
+Checking the dimensions of Training and Validation dataset 
+```{r}
+dim(tr2)
+dim(valid2)
+```
+
+```{r}
+summary(tr2)
+```
+
+
+
+
+
+
+
+
+
+
+```{r}
+set.seed(324)
+ctrl <- trainControl(method="repeatedcv", number=5, repeats=3)
+fbforest2<- train(class~ ., data = tr2 , method="rf", trControl=ctrl)
+```
+
+
+
+
+
+```{r}
+
+fbforest2
+varImp(fbforest2)
+```
+
+
+
+
+
+
+
+Now make predictions using the validation data
+```{r}
+prediction2 <- predict(fbforest2, valid2[,-84], type="raw") #classification prediction
+```
+
+```{r}
+prediction2a <- predict(fbforest2, valid2[,-84], type="prob") #probability predictions
+```
+
+
+
+
+Using Confusion Matrix for evaluate model
+```{r}
+confusionMatrix(prediction2, valid2$class, positive = "1")
+```
+
+
+
+
+
+Plotting the AUC using probability predictions
+```{r}
+#prob_pred <- predict(rf_model_allfeatures2, valid2, type = "prob")
+df_roc<-roc(valid2$class,prediction2a[,2])
+plot(df_roc,main="AUC" %s+% df_roc$auc)
+```
+
+
+# PREDICT FRAUD IN NEW DATASET
+
+```{r}
+setwd("C:/Users/Documents/BCA/fraud/data_input")
+fraud_test <- read.csv("test.csv")
+str(fraud_test)
+#fraud_det4 <- read.csv("Fraud1_train.csv")
+
+```
+
+lets check if  any missing values in our dataset
+```{r}
+sum(is.na(fraud_test))
+```
+
+lets fix the missing values by impute it with median/the most frequent levels
+```{r}
+fraud_test <- fraud_test %>% na.roughfix()
+sum(is.na(fraud_test))
+```
+
+since our model not using X,id_tanggal_transaksi_awal,id_negara,id_merchant,id_channel,tanggal_transaksi_awal,flag_transaksi_finansial, nama_channel, bank_pemilik_kartu and status_transaksi features, lets remove it.
+we also make new feature called range_nilai transaksi
+```{r}
+fraud_test <- fraud_test %>%
+  select(-X,-id_tanggal_transaksi_awal,-id_negara,-id_merchant,-id_channel,-tanggal_transaksi_awal,-flag_transaksi_finansial, -bank_pemilik_kartu, -status_transaksi, -nama_channel) %>%
+  mutate(nilai_transaksi = as.numeric(nilai_transaksi), range_nilai_transaksi = maksimum_nilai_transaksi - minimum_nilai_transaksi) %>%
+  select(-maksimum_nilai_transaksi, -minimum_nilai_transaksi)
+```
+
+```{r}
+str(fraud_test)
+```
+
+
+before make encoding for categorical features in test set, we want to make sure all levels in test dataset same as train dataset
+
+```{r}
+fraud_test <- fraud_test %>%
+  mutate(tipe_kartu = as.factor(tipe_kartu), nama_merchant=as.factor(nama_merchant), tipe_mesin=as.factor(tipe_mesin), tipe_transaksi=as.factor(tipe_transaksi), nama_transaksi=as.factor(nama_transaksi), nama_negara=as.factor(nama_negara), nama_kota=as.factor(nama_kota), lokasi_mesin=as.factor(lokasi_mesin), pemilik_mesin=as.factor(pemilik_mesin), kuartal_transaksi=as.factor(kuartal_transaksi), kepemilikan_kartu=as.factor(kepemilikan_kartu))
+str(fraud_test)
+```
+
+
+lets call again file from train
+```{r}
+setwd("C:/Users/Documents/BCA/fraud/data_input")
+fraud_train <- read.csv("Fraud_det2_imp1.csv")
+fraud_train <- fraud_train %>% select(-X) %>% 
+  mutate(tipe_kartu = as.factor(tipe_kartu), nama_merchant=as.factor(nama_merchant), tipe_mesin=as.factor(tipe_mesin), tipe_transaksi=as.factor(tipe_transaksi), nama_transaksi=as.factor(nama_transaksi), nama_negara=as.factor(nama_negara), nama_kota=as.factor(nama_kota), lokasi_mesin=as.factor(lokasi_mesin), pemilik_mesin=as.factor(pemilik_mesin), kuartal_transaksi=as.factor(kuartal_transaksi), kepemilikan_kartu=as.factor(kepemilikan_kartu))
+str(fraud_train)
+```
+
+lets make the test data have same level as train
+
+```{r}
+levels(fraud_test$tipe_kartu) <- levels(fraud_train$tipe_kartu)
+levels(fraud_test$nama_merchant) <- levels(fraud_train$nama_merchant)
+levels(fraud_test$tipe_mesin) <- levels(fraud_train$tipe_mesin)
+levels(fraud_test$lokasi_mesin) <- levels(fraud_train$lokasi_mesin)
+levels(fraud_test$pemilik_mesin) <- levels(fraud_train$pemilik_mesin)
+levels(fraud_test$tipe_transaksi) <- levels(fraud_train$tipe_transaksi)
+levels(fraud_test$nama_negara) <- levels(fraud_train$nama_negara)
+levels(fraud_test$nama_kota) <- levels(fraud_train$nama_kota)
+levels(fraud_test$kepemilikan_kartu) <- levels(fraud_train$kepemilikan_kartu)
+levels(fraud_test$kuartal_transaksi) <- levels(fraud_train$kuartal_transaksi)
+levels(fraud_test$nama_transaksi) <- levels(fraud_train$nama_transaksi)
+
+```
+
+
+
+
+
+
+lets check how many levels in our categorical features
+
+
+
+
+```{r}
+length(levels(fraud_test$tipe_kartu))
+length(levels(fraud_test$nama_merchant))
+length(levels(fraud_test$tipe_mesin))
+length(levels(fraud_test$lokasi_mesin))
+length(levels(fraud_test$pemilik_mesin))
+length(levels(fraud_test$tipe_transaksi))
+length(levels(fraud_test$nama_negara))
+length(levels(fraud_test$nama_kota))
+length(levels(fraud_test$kepemilikan_kartu))
+length(levels(fraud_test$kuartal_transaksi))
+length(levels(fraud_test$nama_transaksi))
+```
+
+
+`
+
+
+# Convert categorical features into binary encoding
+
+Binary encoding for tipe_kartu
+```{r}
+ceiling(log(14+1)/log(2))
+```
+
+```{r}
+tipe_kartu <- c(fraud_test$tipe_kartu)
+tipe_kartu_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(tipe_kartu)))),
+  ncol = 4,
+  nrow = length(tipe_kartu),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$tipe_kartu)) + 1)/log(2))] #we use ceiling  with levels at train
+str(tipe_kartu_encode)
+```
+
+```{r}
+tipe_kartu_test <- as.data.frame(tipe_kartu_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-tipe_kartu)%>%
+  mutate(tipe_kartu_1 = tipe_kartu_test$V1, tipe_kartu_2 = tipe_kartu_test$V2, tipe_kartu_3 = tipe_kartu_test$V3, tipe_kartu_4 = tipe_kartu_test$V4)
+str(fraud_test)
+```
+
+
+Binary encoding for nama_merchant 
+```{r}
+ceiling(log(1105+1)/log(2))
+```
+
+
+
+
+```{r}
+nama_merchant <- c(fraud_test$nama_merchant)
+nama_merchant_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(nama_merchant)))),
+  ncol = 11,
+  nrow = length(nama_merchant),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$nama_merchant)) + 1)/log(2))]
+str(nama_merchant_encode)
+```
+
+```{r}
+nama_merchant_test <- as.data.frame(nama_merchant_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-nama_merchant)%>%
+  mutate(nama_merchant_1 = nama_merchant_test$V1, nama_merchant_2 = nama_merchant_test$V2, nama_merchant_3 = nama_merchant_test$V3, nama_merchant_4 = nama_merchant_test$V4, nama_merchant_5 = nama_merchant_test$V5, nama_merchant_6 = nama_merchant_test$V6, nama_merchant_7 = nama_merchant_test$V7, nama_merchant_8 = nama_merchant_test$V8, nama_merchant_9 = nama_merchant_test$V9, nama_merchant_10 = nama_merchant_test$V10, nama_merchant_11 = nama_merchant_test$V11)
+str(fraud_test)
+```
+
+
+Binary encoding for tipe_mesin 
+```{r}
+ceiling(log(5341+1)/log(2))
+```
+
+```{r}
+tipe_mesin <- c(fraud_test$tipe_mesin)
+tipe_mesin_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(tipe_mesin)))),
+  ncol = 13,
+  nrow = length(tipe_mesin),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$tipe_mesin)) + 1)/log(2))]
+str(tipe_mesin_encode)
+```
+
+```{r}
+tipe_mesin_test <- as.data.frame(tipe_mesin_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-tipe_mesin)%>%
+  mutate(tipe_mesin_1 = tipe_mesin_test$V1, tipe_mesin_2 = tipe_mesin_test$V2, tipe_mesin_3 = tipe_mesin_test$V3, tipe_mesin_4 = tipe_mesin_test$V4, tipe_mesin_5 = tipe_mesin_test$V5, tipe_mesin_6 = tipe_mesin_test$V6, tipe_mesin_7 = tipe_mesin_test$V7, tipe_mesin_8 = tipe_mesin_test$V8, tipe_mesin_9 = tipe_mesin_test$V9, tipe_mesin_10 = tipe_mesin_test$V10, tipe_mesin_11 = tipe_mesin_test$V11, tipe_mesin_12 = tipe_mesin_test$V12, tipe_mesin_13 = tipe_mesin_test$V13)
+str(fraud_test)
+```
+
+Binary encoding for lokasi_mesin 
+```{r}
+ceiling(log(5814+1)/log(2))
+```
+
+```{r}
+lokasi_mesin <- c(fraud_test$lokasi_mesin)
+lokasi_mesin_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(lokasi_mesin)))),
+  ncol = 13,
+  nrow = length(lokasi_mesin),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$lokasi_mesin)) + 1)/log(2))]
+str(tipe_mesin_encode)
+```
+
+```{r}
+lokasi_mesin_test <- as.data.frame(lokasi_mesin_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-lokasi_mesin)%>%
+  mutate(lokasi_mesin_1 = lokasi_mesin_test$V1, lokasi_mesin_2 = lokasi_mesin_test$V2, lokasi_mesin_3 = lokasi_mesin_test$V3, lokasi_mesin_4 = lokasi_mesin_test$V4, lokasi_mesin_5 = lokasi_mesin_test$V5, lokasi_mesin_6 = lokasi_mesin_test$V6, lokasi_mesin_7 = lokasi_mesin_test$V7, lokasi_mesin_8 = lokasi_mesin_test$V8, lokasi_mesin_9 = lokasi_mesin_test$V9, lokasi_mesin_10 = lokasi_mesin_test$V10, lokasi_mesin_11 = lokasi_mesin_test$V11, lokasi_mesin_12 = lokasi_mesin_test$V12, lokasi_mesin_13 = lokasi_mesin_test$V13)
+str(fraud_test)
+```
+
+
+Binary encoding for pemilik_mesin 
+```{r}
+ceiling(log(1666+1)/log(2))
+```
+
+```{r}
+pemilik_mesin <- c(fraud_test$pemilik_mesin)
+pemilik_mesin_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(pemilik_mesin)))),
+  ncol = 11,
+  nrow = length(pemilik_mesin),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$pemilik_mesin)) + 1)/log(2))]
+str(pemilik_mesin_encode)
+```
+
+```{r}
+pemilik_mesin_test <- as.data.frame(pemilik_mesin_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-pemilik_mesin)%>%
+  mutate(pemilik_mesin_1 = pemilik_mesin_test$V1, pemilik_mesin_2 = pemilik_mesin_test$V2, pemilik_mesin_3 = pemilik_mesin_test$V3, pemilik_mesin_4 = pemilik_mesin_test$V4, pemilik_mesin_5 = pemilik_mesin_test$V5, pemilik_mesin_6 = pemilik_mesin_test$V6, pemilik_mesin_7 = pemilik_mesin_test$V7, pemilik_mesin_8 = pemilik_mesin_test$V8, pemilik_mesin_9 = pemilik_mesin_test$V9, pemilik_mesin_10 = pemilik_mesin_test$V10, pemilik_mesin_11 = pemilik_mesin_test$V11)
+str(fraud_test)
+```
+
+
+Binary encoding for tipe_transaksi
+```{r}
+ceiling(log(20+1)/log(2))
+```
+
+```{r}
+tipe_transaksi <- c(fraud_test$tipe_transaksi)
+tipe_transaksi_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(tipe_transaksi)))),
+  ncol = 5,
+  nrow = length(tipe_transaksi),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$tipe_transaksi)) + 1)/log(2))]
+str(tipe_transaksi_encode)
+```
+
+```{r}
+tipe_transaksi_test <- as.data.frame(tipe_transaksi_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-tipe_transaksi)%>%
+  mutate(tipe_transaksi_1 = tipe_transaksi_test$V1, tipe_transaksi_2 = tipe_transaksi_test$V2, tipe_transaksi_3 = tipe_transaksi_test$V3, tipe_transaksi_4 = tipe_transaksi_test$V4, tipe_transaksi_5 = tipe_transaksi_test$V5)
+str(fraud_test)
+```
+
+Binary encoding for nama_negara
+```{r}
+ceiling(log(12+1)/log(2))
+```
+
+```{r}
+nama_negara <- c(fraud_test$nama_negara)
+nama_negara_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(nama_negara)))),
+  ncol = 4,
+  nrow = length(nama_negara),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$nama_negara)) + 1)/log(2))]
+str(nama_negara_encode)
+```
+
+```{r}
+nama_negara_test <- as.data.frame(nama_negara_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-nama_negara)%>%
+  mutate(nama_negara_1 = nama_negara_test$V1, nama_negara_2 = nama_negara_test$V2, nama_negara_3 = nama_negara_test$V3, nama_negara_4 = nama_negara_test$V4)
+str(fraud_test)
+```
+
+
+Binary encoding for nama_kota
+```{r}
+ceiling(log(229+1)/log(2))
+```
+
+```{r}
+nama_kota <- c(fraud_test$nama_kota)
+nama_kota_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(nama_kota)))),
+  ncol = 8,
+  nrow = length(nama_kota),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$nama_kota)) + 1)/log(2))]
+str(nama_kota_encode)
+```
+
+```{r}
+nama_kota_test <- as.data.frame(nama_kota_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-nama_kota)%>%
+  mutate(nama_kota_1 = nama_kota_test$V1, nama_kota_2 = nama_kota_test$V2, nama_kota_3 = nama_kota_test$V4, nama_kota_4 = nama_kota_test$V4, nama_kota_5 = nama_kota_test$V5, nama_kota_6 = nama_kota_test$V6, nama_kota_7 = nama_kota_test$V7, nama_kota_8 = nama_kota_test$V8)
+str(fraud_test)
+```
+
+
+
+Binary encoding for kepemilikan_kartu
+```{r}
+ceiling(log(2+1)/log(2))
+```
+
+```{r}
+kepemilikan_kartu <- c(fraud_test$kepemilikan_kartu)
+kepemilikan_kartu_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(kepemilikan_kartu)))),
+  ncol = 2,
+  nrow = length(kepemilikan_kartu),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$kepemilikan_kartu)) + 1)/log(2))]
+str(kepemilikan_kartu_encode)
+```
+
+```{r}
+kepemilikan_kartu_test <- as.data.frame(kepemilikan_kartu_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-kepemilikan_kartu)%>%
+  mutate(kepemilikan_kartu_1 = kepemilikan_kartu_test$V1, kepemilikan_kartu_2 = kepemilikan_kartu_test$V2)
+str(fraud_test)
+```
+
+
+
+Binary encoding for kuartal_transaksi 
+```{r}
+ceiling(log(4+1)/log(2))
+```
+
+```{r}
+kuartal_transaksi  <- c(fraud_test$kuartal_transaksi)
+kuartal_transaksi_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(kuartal_transaksi)))),
+  ncol = 3,
+  nrow = length(kuartal_transaksi),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$kuartal_transaksi)) + 1)/log(2))]
+str(kuartal_transaksi_encode)
+```
+
+```{r}
+kuartal_transaksi_test <- as.data.frame(kuartal_transaksi_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-kuartal_transaksi)%>%
+  mutate(kuartal_transaksi_1 = kuartal_transaksi_test$V1, kuartal_transaksi_2 = kuartal_transaksi_test$V2, kuartal_transaksi_3 = kuartal_transaksi_test$V3)
+str(fraud_test)
+```
+
+Binary encoding for nama_transaksi 
+```{r}
+ceiling(log(20+1)/log(2))
+```
+
+```{r}
+nama_transaksi  <- c(fraud_test$nama_transaksi)
+nama_transaksi_encode <- matrix(
+  as.integer(intToBits(as.integer(as.factor(nama_transaksi)))),
+  ncol = 5,
+  nrow = length(nama_transaksi),
+  byrow = TRUE
+)[, 1:ceiling(log(length(levels(fraud_test$nama_transaksi)) + 1)/log(2))]
+str(nama_transaksi_encode)
+```
+
+
+```{r}
+nama_transaksi_test <- as.data.frame(nama_transaksi_encode)
+#str(lokasi_mesin2)
+fraud_test <- fraud_test %>%
+  select(-nama_transaksi)%>%
+  mutate(nama_transaksi_1 =nama_transaksi_test$V1, nama_transaksi_2 = nama_transaksi_test$V2, nama_transaksi_3 = nama_transaksi_test$V3, nama_transaksi_4 = nama_transaksi_test$V4, nama_transaksi_5 = nama_transaksi_test$V5)
+str(fraud_test)
+```
+
+**Normalization continous features**
+before qe move along further, dont forget to normalize data for continous feature like nilai_transaksi, rata_rata_nilai_transaksi , rata_rata_jumlah_transaksi and range_nilai_transaksi    
+
+```{r}
+testdata <- fraud_test %>% mutate(log_nilai_transaksi=log10(nilai_transaksi+1), log_rata_nilai_transaksi=log10(rata_rata_nilai_transaksi+1), log_range=log10(range_nilai_transaksi+1))
+
+testdata <-testdata %>% select(-nilai_transaksi,-rata_rata_nilai_transaksi,-range_nilai_transaksi)
+str(testdata)
+```
+
+lets check if there any infinite values
+```{r}
+summary(testdata)
+```
+we dont find any infinity values
+
+
+
+
+
+
+
+**Predict Fraud**
+
+
+
+```{r}
+prediction <- predict(fbforest2, testdata, type="raw")
+```
+
+```{r}
+probability <- predict(fbforest2, testdata, type="prob")
+```
+
+
+
+```{r}
+prediction <- data.frame(prediction)
+probability <- data.frame(probability[,2])
+testdata <- cbind(testdata, prediction)
+testdata <- cbind(testdata, probability)
+str(testdata)
+```
+
+
+
+
+
+
+
+
+
+
+
+**File Submisiion** 
+
+
+```{r}
+setwd("C:/Users/Documents/BCA/fraud/data_input")
+fraud_submission <- read.csv("test.csv")
+fraud_submission <- fraud_submission %>% select(X)
+str(fraud_submission)
+```
+
+```{r}
+fraud_submission <- cbind(fraud_submission, prediction)
+fraud_submission <- cbind(fraud_submission, probability)
+str(fraud_submission)
+```
+
+
+
+
+```{r}
+write.csv(fraud_submission,"fraud_submission.csv")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
